@@ -1,0 +1,3 @@
+*.json
+dashboard_*.html
+__pycache__/
