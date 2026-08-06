@@ -189,7 +189,7 @@ def main():
     hits, errors, bt = scan(syms, a.sleep)
     cls = classify(hits)
     perf = summarize_backtest(bt)
-    out = dict(asof=datetime.now(timezone.utc).isoformat(), universe=uname,
+    out = dict(asof=datetime.now().isoformat(), universe=uname,
                scanned=len(syms), errors=errors, cls=cls, perf=perf)
     with open(a.json, "w") as f:
         json.dump(out, f, indent=2)

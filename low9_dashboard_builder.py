@@ -121,7 +121,7 @@ FILTER_JS = """<script>
 
 def build(data, path):
     C = data["cls"]; P = data["perf"]
-    asof = data["asof"][:10]
+    asof = data["asof"][:16].replace("T", " ") + " PT"
     has_pe = any(isinstance(r.get("pe"), (int, float)) or r.get("pe") is None and "pe" in r
                  for rows in C.values() for r in rows) and any("pe" in r for rows in C.values() for r in rows)
     n = lambda k: len(C[k])
