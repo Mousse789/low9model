@@ -1,11 +1,5 @@
 #!/usr/bin/env python3
-"""Generate a self-contained HTML dashboard from a low9/high9 scan JSON.
-
-Supports optional P/E enrichment: if hit rows carry a "pe" field, a P/E column
-and interactive P/E sliders are rendered — low-9 (bottom/buy) tables keep value
-names (P/E <= threshold), high-9 (top/sell) tables keep expensive names
-(P/E >= threshold). Names with no trailing earnings are always shown and flagged.
-"""
+"""Generate a self-contained HTML dashboard from a low9/high9 scan JSON."""
 import json, sys, html
 
 def count_label(field, v):
@@ -50,6 +44,13 @@ def section(title, sub, dot, rows, field, badge):
     return (f'<section><div class="shd"><span class="dot {dot}"></span>{title}'
             f'<small>{sub}</small></div><table>{rows_html(rows, field, badge)}</table></section>')
 
+def dsection(title, sub, dot, rows, field, badge):
+    # collapsible (folded by default) version, used for the "extended" lists
+    n = len([r for r in rows]) if rows else 0
+    cnt = f' ({n})' if n else ''
+    return (f'<details class="sec"><summary class="shd"><span class="dot {dot}"></span>{title}{cnt}'
+            f'<small>{sub}</small></summary><table>{rows_html(rows, field, badge)}</table></details>')
+
 def perf_panel(perf):
     def cell(key, good_hi=True):
         s = perf.get(key)
@@ -65,10 +66,10 @@ def perf_panel(perf):
 <small>backtest over ~2y history · % that moved the expected way (avg forward return · sample size)</small></div>
 <table class="perf">
 <tr><td class="pl"></td><td class="ph">near</td><td class="ph">mid</td><td class="ph">far</td></tr>
-{row("Low-9 daily → up (5/10/20d)","daily","buy",[5,10,20])}
-{row("Low-9 weekly → up (4/8/12w)","weekly","buy",[4,8,12])}
-{row("High-9 daily → down (5/10/20d)","daily","sell",[5,10,20])}
-{row("High-9 weekly → down (4/8/12w)","weekly","sell",[4,8,12])}
+{row("Low-9 daily &rarr; up (5/10/20d)","daily","buy",[5,10,20])}
+{row("Low-9 weekly &rarr; up (4/8/12w)","weekly","buy",[4,8,12])}
+{row("High-9 daily &rarr; down (5/10/20d)","daily","sell",[5,10,20])}
+{row("High-9 weekly &rarr; down (4/8/12w)","weekly","sell",[4,8,12])}
 </table></section>"""
 
 CONTROLS = """<div class="ctl">
@@ -139,12 +140,12 @@ def build(data, path):
 
     low = (section("Fresh weekly low-9", "strongest bottom signal — 9 weekly closes below the close 4 weeks earlier", "hot", C["weekly_low_9"], "weekly_low", "hot")
            + section("Fresh daily low-9", "9 daily closes below the close 4 days earlier", "warm", C["daily_low_9"], "daily_low", "warm")
-           + section("Weekly low extended", "9 completed, still falling — badge shows weeks since the 9", "cool", C["weekly_low_ext"], "weekly_low", "cool")
-           + section("Daily low extended", "9 completed, still falling — badge shows days since the 9", "cool", C["daily_low_ext"], "daily_low", "cool"))
+           + dsection("Weekly low extended", "9 completed, still falling — badge shows weeks since the 9", "cool", C["weekly_low_ext"], "weekly_low", "cool")
+           + dsection("Daily low extended", "9 completed, still falling — badge shows days since the 9", "cool", C["daily_low_ext"], "daily_low", "cool"))
     high = (section("Fresh weekly high-9", "strongest top signal — 9 weekly closes above the close 4 weeks earlier", "grn", C["weekly_high_9"], "weekly_high", "grn")
             + section("Fresh daily high-9", "9 daily closes above the close 4 days earlier", "teal", C["daily_high_9"], "daily_high", "teal")
-            + section("Weekly high extended", "9 completed, still rising — badge shows weeks since the 9", "teal", C["weekly_high_ext"], "weekly_high", "teal")
-            + section("Daily high extended", "9 completed, still rising — badge shows days since the 9", "teal", C["daily_high_ext"], "daily_high", "teal"))
+            + dsection("Weekly high extended", "9 completed, still rising — badge shows weeks since the 9", "teal", C["weekly_high_ext"], "weekly_high", "teal")
+            + dsection("Daily high extended", "9 completed, still rising — badge shows days since the 9", "teal", C["daily_high_ext"], "daily_high", "teal"))
 
     controls = CONTROLS if has_pe else ""
     filter_js = FILTER_JS if has_pe else ""
@@ -172,6 +173,12 @@ def build(data, path):
 .ctl .mi{{font-size:12px;color:var(--mut);text-align:right;font-variant-numeric:tabular-nums}}
 h2{{font-size:13px;text-transform:uppercase;letter-spacing:1px;color:var(--mut);margin:26px 0 10px;border-bottom:1px solid var(--line);padding-bottom:6px}}
 section{{background:var(--card);border:1px solid var(--line);border-radius:13px;margin-bottom:16px;overflow:hidden}}
+details.sec{{background:var(--card);border:1px solid var(--line);border-radius:13px;margin-bottom:16px;overflow:hidden}}
+details.sec>summary{{cursor:pointer;list-style:none}}
+details.sec>summary::-webkit-details-marker{{display:none}}
+details.sec>summary::before{{content:"▸";color:var(--mut);font-size:11px;margin-right:2px}}
+details.sec[open]>summary::before{{content:"▾"}}
+details.sec:not([open])>summary{{border-bottom:none}}
 .shd{{padding:13px 16px;font-weight:650;font-size:14px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:8px;flex-wrap:wrap}}
 .dot{{width:9px;height:9px;border-radius:50%;flex:none}}
 .dot.hot{{background:var(--hot)}}.dot.warm{{background:var(--warm)}}.dot.cool{{background:var(--cool)}}.dot.grn{{background:var(--grn)}}.dot.teal{{background:var(--teal)}}.dot.gp{{background:var(--grn)}}
@@ -203,7 +210,7 @@ tr:first-child td{{border-top:none}}.tk{{font-weight:700}}.nm{{color:var(--mut)}
 {low}
 <h2>🔴 High 9 — potential tops (reverse / drop)</h2>
 {high}
-<div class="note">{pe_note}<b>How to read this:</b> A <b>low 9</b> completes after 9 straight bars each closing <b>below</b> the close 4 bars earlier (TD Buy Setup) — downtrend exhaustion, a possible bottom. A <b>high 9</b> completes after 9 straight bars each closing <b>above</b> the close 4 bars earlier (TD Sell Setup) — uptrend exhaustion, a possible top. Weekly signals are stronger and slower than daily. In the "extended" sections the badge reads <b>9 +N</b>: the setup completed its 9, and the trend has continued for N more bars since (days on daily, weeks on weekly) — i.e. the expected reversal hasn't happened yet. <b>Signal performance</b> backtests every completed 9 over the available history: the % is how often price moved the expected way (up after a low-9, down after a high-9), with average forward return and sample size. Note that in strong uptrends high-9 "sell" signals often keep rising, which the win-rates make visible. Scanned {data['scanned']} names, {data['errors']} fetch errors.<br><br>
+<div class="note">{pe_note}<b>How to read this:</b> A <b>low 9</b> completes after 9 straight bars each closing <b>below</b> the close 4 bars earlier (TD Buy Setup) — downtrend exhaustion, a possible bottom. A <b>high 9</b> completes after 9 straight bars each closing <b>above</b> the close 4 bars earlier (TD Sell Setup) — uptrend exhaustion, a possible top. Weekly signals are stronger and slower than daily. In the "extended" sections the badge reads <b>9 +N</b>: the setup completed its 9, and the trend has continued for N more bars since (days on daily, weeks on weekly). <b>Signal performance</b> backtests every completed 9 over the available history: the % is how often price moved the expected way (up after a low-9, down after a high-9), with average forward return and sample size. Scanned {data['scanned']} names, {data['errors']} fetch errors.<br><br>
 Technical screen for research only — <b>not financial advice</b>. Signals fail often; do your own analysis.</div>
 </div>{filter_js}</body></html>"""
     with open(path, "w") as f:
