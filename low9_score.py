@@ -30,6 +30,22 @@ def tier(score):
     if score >= 65: return "Medium"
     return "Low"
 
+def factors(h, M):
+    """Human-readable favorable factors the model rewards, for display."""
+    f = []
+    d = h.get("depth")
+    if isinstance(d, (int, float)) and d <= -0.35: f.append("deep drop")
+    mc = h.get("mktcap")
+    if isinstance(mc, (int, float)):
+        if mc > 200e9: f.append("mega cap")
+        elif mc > 10e9: f.append("large cap")
+    sr = M["sector_rate"].get(h.get("sector") or "?", M["global_rate"])
+    if sr >= M["global_rate"] + 0.02: f.append("strong sector")
+    if h.get("above_ma"): f.append("uptrend")
+    v = h.get("vol")
+    if isinstance(v, (int, float)) and v <= M["vmed"]: f.append("calm")
+    return f
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--in", dest="inp", default="low9_hits_pe.json")
@@ -48,6 +64,7 @@ def main():
             s = score_one(h, M)
             h["score"] = s
             h["tier"] = tier(s)
+            h["factors"] = factors(h, M)
     # sort fresh weekly low-9 by score desc
     data["cls"]["weekly_low_9"] = sorted(data["cls"].get("weekly_low_9", []),
                                          key=lambda h: -h.get("score", 0))

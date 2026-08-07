@@ -35,12 +35,16 @@ def rows_html(rows, field, badge, mx=25, scored=False):
         pe_attr = f'{pe:g}' if isinstance(pe, (int, float)) else ""
         noearn = "0" if isinstance(pe, (int, float)) else "1"
         conf = _conf_cell(h) if scored else ""
+        tierv = (h.get("tier") or "").lower() if scored else ""
+        tattr = f' data-tier="{tierv}"' if scored else ""
+        facts = h.get("factors") or []
+        fhtml = "".join(f'<span class="fct">{html.escape(x)}</span>' for x in facts) if scored else ""
         out.append(
-            f'<tr class="row {side}" data-pe="{pe_attr}" data-noearn="{noearn}">'
+            f'<tr class="row {side}"{tattr} data-pe="{pe_attr}" data-noearn="{noearn}">'
             f'{conf}'
             f'<td class="tk">{html.escape(h["sym"])}</td>'
             f'<td class="nm">{html.escape(h["name"])}</td>'
-            f'<td class="sc">{html.escape(h["sector"])}</td>'
+            f'<td class="sc">{html.escape(h["sector"])}{fhtml}</td>'
             f'<td class="pr">${h["price"]:,.2f}</td>'
             f'{_pe_cell(h)}'
             f'<td class="ct"><span class="badge {badge}">{count_label(field, h[field])}</span></td></tr>'
@@ -130,6 +134,34 @@ FILTER_JS = """<script>
 })();
 </script>"""
 
+CONF_CTL = """<div class="cctl">
+<span class="cll">Weekly low-9 confidence:</span>
+<label><input type="radio" name="cf" value="all" checked> Show all</label>
+<label><input type="radio" name="cf" value="med"> Medium+ (65+)</label>
+<label><input type="radio" name="cf" value="high"> High only (78+)</label>
+<span id="cfinfo" class="cfi"></span>
+</div>"""
+
+CONF_JS = """<script>
+(function(){
+  var rows=Array.prototype.slice.call(document.querySelectorAll('tr.row[data-tier]'));
+  function apply(){
+    var m=(document.querySelector('input[name=cf]:checked')||{}).value||'all';
+    var shown=0;
+    rows.forEach(function(tr){
+      var t=tr.dataset.tier;
+      var ok=(m==='all')||(m==='med'&&t!=='low')||(m==='high'&&t==='high');
+      tr.classList.toggle('cfhide', !ok);
+      if(ok) shown++;
+    });
+    var info=document.getElementById('cfinfo');
+    if(info) info.textContent=shown+' of '+rows.length+' weekly low-9 shown';
+  }
+  Array.prototype.forEach.call(document.querySelectorAll('input[name=cf]'),function(r){r.addEventListener('change',apply);});
+  apply();
+})();
+</script>"""
+
 def build(data, path):
     C = data["cls"]; P = data["perf"]
     asof = data["asof"][:16].replace("T", " ") + " PT"
@@ -159,6 +191,8 @@ def build(data, path):
 
     controls = CONTROLS if has_pe else ""
     filter_js = FILTER_JS if has_pe else ""
+    conf_ctl = CONF_CTL
+    conf_js = CONF_JS
     pe_note = ("<b>P/E filter:</b> use the sliders to keep only reasonably-valued names in the low-9 (bottom/buy) "
                "lists and only richly-valued names in the high-9 (top/sell) lists. P/E is trailing (TTM). Names with "
                "no trailing earnings show <span class='na'>n/a</span> and are always displayed and flagged — never hidden by the filter. ") if has_pe else ""
@@ -204,6 +238,10 @@ tr:first-child td{{border-top:none}}.tk{{font-weight:700}}.nm{{color:var(--mut)}
 .badge .plus{{font-weight:400;font-size:11px;opacity:.85}}
 .cf{{width:52px}}.conf{{display:inline-block;min-width:34px;text-align:center;padding:3px 7px;border-radius:8px;font-weight:700;font-size:13px;font-variant-numeric:tabular-nums;color:#fff}}
 .conf.high{{background:var(--grn)}}.conf.medium{{background:var(--warm)}}.conf.low{{background:var(--mutc)}}
+.fct{{display:inline-block;margin-left:5px;font-size:10px;color:var(--grn);border:1px solid var(--grn);border-radius:5px;padding:0 5px;opacity:.85;white-space:nowrap}}
+.cctl{{background:var(--card);border:1px solid var(--line);border-radius:13px;padding:12px 16px;margin-bottom:16px;display:flex;align-items:center;gap:14px;flex-wrap:wrap;font-size:13px}}
+.cctl .cll{{font-weight:650}}.cctl label{{display:flex;align-items:center;gap:5px;cursor:pointer}}.cctl .cfi{{color:var(--mut);margin-left:auto;font-variant-numeric:tabular-nums}}
+tr.cfhide{{display:none!important}}
 .empty{{color:var(--mutc);text-align:center;padding:16px}}
 .perf td{{text-align:center;font-variant-numeric:tabular-nums}}.perf .pl{{text-align:left;color:var(--ink);font-weight:500}}
 .ph{{color:var(--mut);font-size:11px;text-transform:uppercase;letter-spacing:.5px}}
@@ -219,12 +257,13 @@ tr:first-child td{{border-top:none}}.tk{{font-weight:700}}.nm{{color:var(--mut)}
 {controls}
 {perf_panel(P)}
 <h2>🟢 Low 9 — potential bottoms (bounce up)</h2>
+{conf_ctl}
 {low}
 <h2>🔴 High 9 — potential tops (reverse / drop)</h2>
 {high}
-<div class="note"><b>Confidence score (weekly low-9 only):</b> the colored 0–100 pill is a model estimate of the chance this signal's price is higher 8 weeks out, learned from ~2y of history (drivers: deeper drop, bigger cap, calmer stock, stronger sector). <span class="conf high">≥78 High</span> <span class="conf medium">65–77 Medium</span> <span class="conf low">&lt;65 Low</span>. Baseline for all weekly low-9s ≈ {data.get('model_base_win','?')}%. On unseen recent signals the top-confidence quarter averaged +11.8% vs −0.1% for the bottom — useful for ranking, not a guarantee. <br><br>{pe_note}<b>How to read this:</b> A <b>low 9</b> completes after 9 straight bars each closing <b>below</b> the close 4 bars earlier (TD Buy Setup) — downtrend exhaustion, a possible bottom. A <b>high 9</b> completes after 9 straight bars each closing <b>above</b> the close 4 bars earlier (TD Sell Setup) — uptrend exhaustion, a possible top. Weekly signals are stronger and slower than daily. In the "extended" sections the badge reads <b>9 +N</b>: the setup completed its 9, and the trend has continued for N more bars since (days on daily, weeks on weekly). <b>Signal performance</b> backtests every completed 9 over the available history: the % is how often price moved the expected way (up after a low-9, down after a high-9), with average forward return and sample size. Scanned {data['scanned']} names, {data['errors']} fetch errors.<br><br>
+<div class="note"><b>Confidence score (weekly low-9 only):</b> the colored 0–100 pill is a model estimate of the chance this signal's price is higher 8 weeks out, learned from ~2y of history (drivers: deeper drop, bigger cap, calmer stock, stronger sector). <span class="conf high">≥78 High</span> <span class="conf medium">65–77 Medium</span> <span class="conf low">&lt;65 Low</span>. Baseline for all weekly low-9s ≈ {data.get('model_base_win','?')}%. On unseen recent signals the top-confidence quarter averaged +11.8% vs −0.1% for the bottom — useful for ranking, not a guarantee. <br><br>{pe_note}<b>How to read this:</b> A <b>low 9</b> completes after 9 straight bars each closing <b>below</b> the close 4 bars earlier (TD Buy Setup) — downtrend exhaustion, a possible bottom. A <b>high 9</b> completes after 9 straight bars each closing <b>above</b> the close 4 bars earlier (TD Sell Setup) — uptrend exhaustion, a possible top. Weekly signals are stronger and slower than daily. In the "extended" sections the badge reads <b>9 +N</b>: the setup completed its 9, and the trend has continued for N more bars since (days on daily, weeks on weekly) — i.e. the expected reversal hasn't happened yet. <b>Signal performance</b> backtests every completed 9 over the available history: the % is how often price moved the expected way (up after a low-9, down after a high-9), with average forward return and sample size. Note that in strong uptrends high-9 "sell" signals often keep rising, which the win-rates make visible. Scanned {data['scanned']} names, {data['errors']} fetch errors.<br><br>
 Technical screen for research only — <b>not financial advice</b>. Signals fail often; do your own analysis.</div>
-</div>{filter_js}</body></html>"""
+</div>{filter_js}{conf_js}</body></html>"""
     with open(path, "w") as f:
         f.write(doc)
     print("wrote", path, len(doc), "bytes")
