@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Low-9 / High-9 scanner (TD Sequential setups, 九转序列) for US stocks — daily + weekly."""
-import sys, time, json, csv, io, re, argparse, urllib.request
+import sys, time, json, csv, io, re, argparse, urllib.request, statistics
 from collections import OrderedDict, defaultdict
 from datetime import datetime, timezone
 
@@ -99,6 +99,14 @@ def setup_count(closes, side):
         res.append(cnt)
     return res
 
+def hit_features(dcloses, wcloses):
+    rets = [(dcloses[i]-dcloses[i-1])/dcloses[i-1] for i in range(1, len(dcloses)) if dcloses[i-1] > 0]
+    vol = round(statistics.pstdev(rets) * (252 ** 0.5), 4) if len(rets) >= 20 else None
+    depth = round((wcloses[-1]-wcloses[-10])/wcloses[-10], 4) if len(wcloses) >= 11 and wcloses[-10] > 0 else None
+    ma = sum(wcloses[-40:]) / len(wcloses[-40:]) if wcloses else None
+    above = bool(wcloses[-1] > ma) if ma else None
+    return vol, depth, above
+
 def record_backtest(closes, tf, side, horizons, bt):
     cnt = setup_count(closes, side)
     n = len(closes)
@@ -130,8 +138,10 @@ def scan(symbols, sleep=0.25):
                 weekly_high=setup_count(wcloses, "sell")[-1],
             )
             if max(cur.values()) >= 7:
+                vol, depth, above_ma = hit_features(dcloses, wcloses)
                 hits.append(dict(sym=sym, name=name, sector=sector,
-                                 price=round(dcloses[-1], 2), **cur))
+                                 price=round(dcloses[-1], 2), vol=vol, depth=depth,
+                                 above_ma=above_ma, **cur))
         except Exception:
             errors += 1
         time.sleep(sleep)

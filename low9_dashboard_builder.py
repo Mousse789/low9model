@@ -17,17 +17,27 @@ def _pe_cell(h):
     return (f'<td class="pe" data-has="0"><span class="na" title="no trailing (TTM) earnings">n/a</span>'
             f'<span class="flag">no earnings</span>{hint}</td>')
 
-def rows_html(rows, field, badge, mx=25):
+def _conf_cell(h):
+    s = h.get("score")
+    if not isinstance(s, (int, float)):
+        return '<td class="cf"></td>'
+    t = (h.get("tier") or "").lower()
+    return f'<td class="cf"><span class="conf {t}">{s}</span></td>'
+
+def rows_html(rows, field, badge, mx=25, scored=False):
     side = "low" if "low" in field else "high"
+    nc = 7 if scored else 6
     if not rows:
-        return '<tr><td colspan="6" class="empty">None today</td></tr>'
+        return f'<tr><td colspan="{nc}" class="empty">None today</td></tr>'
     out = []
     for h in rows[:mx]:
         pe = h.get("pe")
         pe_attr = f'{pe:g}' if isinstance(pe, (int, float)) else ""
         noearn = "0" if isinstance(pe, (int, float)) else "1"
+        conf = _conf_cell(h) if scored else ""
         out.append(
             f'<tr class="row {side}" data-pe="{pe_attr}" data-noearn="{noearn}">'
+            f'{conf}'
             f'<td class="tk">{html.escape(h["sym"])}</td>'
             f'<td class="nm">{html.escape(h["name"])}</td>'
             f'<td class="sc">{html.escape(h["sector"])}</td>'
@@ -36,20 +46,20 @@ def rows_html(rows, field, badge, mx=25):
             f'<td class="ct"><span class="badge {badge}">{count_label(field, h[field])}</span></td></tr>'
         )
     if len(rows) > mx:
-        out.append(f'<tr class="more"><td colspan="6" class="empty">… +{len(rows)-mx} more</td></tr>')
-    out.append('<tr class="emptyrow" style="display:none"><td colspan="6" class="empty">No names match the P/E filter</td></tr>')
+        out.append(f'<tr class="more"><td colspan="{nc}" class="empty">… +{len(rows)-mx} more</td></tr>')
+    out.append(f'<tr class="emptyrow" style="display:none"><td colspan="{nc}" class="empty">No names match the P/E filter</td></tr>')
     return "\n".join(out)
 
-def section(title, sub, dot, rows, field, badge):
+def section(title, sub, dot, rows, field, badge, scored=False):
     return (f'<section><div class="shd"><span class="dot {dot}"></span>{title}'
-            f'<small>{sub}</small></div><table>{rows_html(rows, field, badge)}</table></section>')
+            f'<small>{sub}</small></div><table>{rows_html(rows, field, badge, scored=scored)}</table></section>')
 
-def dsection(title, sub, dot, rows, field, badge):
+def dsection(title, sub, dot, rows, field, badge, scored=False):
     # collapsible (folded by default) version, used for the "extended" lists
     n = len([r for r in rows]) if rows else 0
     cnt = f' ({n})' if n else ''
     return (f'<details class="sec"><summary class="shd"><span class="dot {dot}"></span>{title}{cnt}'
-            f'<small>{sub}</small></summary><table>{rows_html(rows, field, badge)}</table></details>')
+            f'<small>{sub}</small></summary><table>{rows_html(rows, field, badge, scored=scored)}</table></details>')
 
 def perf_panel(perf):
     def cell(key, good_hi=True):
@@ -138,9 +148,9 @@ def build(data, path):
         f'<div class="tile {c}"><div class="tval">{v}</div><div class="tlab">{l}</div></div>'
         for l, v, c in tiles)
 
-    low = (section("Fresh weekly low-9", "strongest bottom signal — 9 weekly closes below the close 4 weeks earlier", "hot", C["weekly_low_9"], "weekly_low", "hot")
+    low = (section("Fresh weekly low-9", "confidence-ranked · 9 weekly closes below the close 4 weeks earlier", "hot", C["weekly_low_9"], "weekly_low", "hot", scored=True)
            + section("Fresh daily low-9", "9 daily closes below the close 4 days earlier", "warm", C["daily_low_9"], "daily_low", "warm")
-           + dsection("Weekly low extended", "9 completed, still falling — badge shows weeks since the 9", "cool", C["weekly_low_ext"], "weekly_low", "cool")
+           + dsection("Weekly low extended", "9 completed, still falling — badge shows weeks since the 9", "cool", C["weekly_low_ext"], "weekly_low", "cool", scored=True)
            + dsection("Daily low extended", "9 completed, still falling — badge shows days since the 9", "cool", C["daily_low_ext"], "daily_low", "cool"))
     high = (section("Fresh weekly high-9", "strongest top signal — 9 weekly closes above the close 4 weeks earlier", "grn", C["weekly_high_9"], "weekly_high", "grn")
             + section("Fresh daily high-9", "9 daily closes above the close 4 days earlier", "teal", C["daily_high_9"], "daily_high", "teal")
@@ -192,6 +202,8 @@ tr:first-child td{{border-top:none}}.tk{{font-weight:700}}.nm{{color:var(--mut)}
 .badge{{display:inline-block;min-width:26px;text-align:center;padding:2px 8px;border-radius:20px;font-weight:700;font-size:13px;color:#fff}}
 .badge.hot{{background:var(--hot)}}.badge.warm{{background:var(--warm)}}.badge.cool{{background:var(--cool)}}.badge.grn{{background:var(--grn)}}.badge.teal{{background:var(--teal)}}
 .badge .plus{{font-weight:400;font-size:11px;opacity:.85}}
+.cf{{width:52px}}.conf{{display:inline-block;min-width:34px;text-align:center;padding:3px 7px;border-radius:8px;font-weight:700;font-size:13px;font-variant-numeric:tabular-nums;color:#fff}}
+.conf.high{{background:var(--grn)}}.conf.medium{{background:var(--warm)}}.conf.low{{background:var(--mutc)}}
 .empty{{color:var(--mutc);text-align:center;padding:16px}}
 .perf td{{text-align:center;font-variant-numeric:tabular-nums}}.perf .pl{{text-align:left;color:var(--ink);font-weight:500}}
 .ph{{color:var(--mut);font-size:11px;text-transform:uppercase;letter-spacing:.5px}}
@@ -210,7 +222,7 @@ tr:first-child td{{border-top:none}}.tk{{font-weight:700}}.nm{{color:var(--mut)}
 {low}
 <h2>🔴 High 9 — potential tops (reverse / drop)</h2>
 {high}
-<div class="note">{pe_note}<b>How to read this:</b> A <b>low 9</b> completes after 9 straight bars each closing <b>below</b> the close 4 bars earlier (TD Buy Setup) — downtrend exhaustion, a possible bottom. A <b>high 9</b> completes after 9 straight bars each closing <b>above</b> the close 4 bars earlier (TD Sell Setup) — uptrend exhaustion, a possible top. Weekly signals are stronger and slower than daily. In the "extended" sections the badge reads <b>9 +N</b>: the setup completed its 9, and the trend has continued for N more bars since (days on daily, weeks on weekly). <b>Signal performance</b> backtests every completed 9 over the available history: the % is how often price moved the expected way (up after a low-9, down after a high-9), with average forward return and sample size. Scanned {data['scanned']} names, {data['errors']} fetch errors.<br><br>
+<div class="note"><b>Confidence score (weekly low-9 only):</b> the colored 0–100 pill is a model estimate of the chance this signal's price is higher 8 weeks out, learned from ~2y of history (drivers: deeper drop, bigger cap, calmer stock, stronger sector). <span class="conf high">≥78 High</span> <span class="conf medium">65–77 Medium</span> <span class="conf low">&lt;65 Low</span>. Baseline for all weekly low-9s ≈ {data.get('model_base_win','?')}%. On unseen recent signals the top-confidence quarter averaged +11.8% vs −0.1% for the bottom — useful for ranking, not a guarantee. <br><br>{pe_note}<b>How to read this:</b> A <b>low 9</b> completes after 9 straight bars each closing <b>below</b> the close 4 bars earlier (TD Buy Setup) — downtrend exhaustion, a possible bottom. A <b>high 9</b> completes after 9 straight bars each closing <b>above</b> the close 4 bars earlier (TD Sell Setup) — uptrend exhaustion, a possible top. Weekly signals are stronger and slower than daily. In the "extended" sections the badge reads <b>9 +N</b>: the setup completed its 9, and the trend has continued for N more bars since (days on daily, weeks on weekly). <b>Signal performance</b> backtests every completed 9 over the available history: the % is how often price moved the expected way (up after a low-9, down after a high-9), with average forward return and sample size. Scanned {data['scanned']} names, {data['errors']} fetch errors.<br><br>
 Technical screen for research only — <b>not financial advice</b>. Signals fail often; do your own analysis.</div>
 </div>{filter_js}</body></html>"""
     with open(path, "w") as f:
