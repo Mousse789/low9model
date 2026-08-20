@@ -17,7 +17,7 @@ dashboard can show whether stacking the timeframes actually beats a single-timef
 
 Data: Yahoo chart API (daily bars); weekly bars resampled locally. Standard library only.
 """
-import sys, time, json, csv, io, re, argparse, urllib.request
+import sys, time, json, csv, io, re, argparse, urllib.request, statistics
 from collections import OrderedDict, defaultdict
 from datetime import datetime, timezone
 
@@ -163,6 +163,25 @@ def conf_tier(d, w):
         return "near"
     return None
 
+def hit_features(dcloses, wcloses):
+    """Model features consumed by low9_score.py — DO NOT REMOVE.
+
+    vol      annualised stdev of daily returns
+    depth    10-week price change (how deep the drop into the setup was)
+    above_ma weekly close above its own 40-week average
+    Dropping these does not break scoring loudly: score_one() silently substitutes
+    depth=0.0 and vol=median, which are the model's two strongest coefficients. Every
+    score then lands ~12 points low (a 0 depth reads as "never dropped"), the High/Medium
+    tiers become unreachable, and the ranking loses its two best features. Measured on a
+    2026-08-20 sample: with features 46-62, without 34-50 for the same names.
+    """
+    rets = [(dcloses[i] - dcloses[i - 1]) / dcloses[i - 1] for i in range(1, len(dcloses)) if dcloses[i - 1] > 0]
+    vol = round(statistics.pstdev(rets) * (252 ** 0.5), 4) if len(rets) >= 20 else None
+    depth = round((wcloses[-1] - wcloses[-10]) / wcloses[-10], 4) if len(wcloses) >= 11 and wcloses[-10] > 0 else None
+    ma = sum(wcloses[-40:]) / len(wcloses[-40:]) if wcloses else None
+    above = bool(wcloses[-1] > ma) if ma else None
+    return vol, depth, above
+
 def record_backtest(closes, tf, side, horizons, bt):
     """For every bar where the setup first completes (count==9), log the forward return over each horizon."""
     cnt = setup_count(closes, side)
@@ -226,8 +245,10 @@ def scan(symbols, sleep=0.25):
                 weekly_high=setup_count(wcloses, "sell")[-1],
             )
             if max(cur.values()) >= 7:
+                vol, depth, above_ma = hit_features(dcloses, wcloses)
                 h = dict(sym=sym, name=name, sector=sector,
-                         price=round(dcloses[-1], 2), **cur)
+                         price=round(dcloses[-1], 2),
+                         vol=vol, depth=depth, above_ma=above_ma, **cur)
                 h["conf_low"] = conf_tier(cur["daily_low"], cur["weekly_low"])
                 h["conf_high"] = conf_tier(cur["daily_high"], cur["weekly_high"])
                 hits.append(h)
