@@ -1,5 +1,20 @@
 #!/usr/bin/env python3
-"""Build the vivid, interactive Low-9 / High-9 web app (single self-contained HTML)."""
+"""Build the vivid, interactive Low-9 / High-9 web app (single self-contained HTML).
+
+Reads a scan JSON (with optional pe/fwd_pe/mktcap/spark/chg fields on each hit)
+and emits index.html: KPI tiles, two summary charts, and sortable + filterable
+signal tables with inline price sparklines. All interactivity is client-side JS,
+so filters, sorting and search update live. Colors follow the validated dataviz
+palette. Standard library only.
+
+Daily+weekly confluence: rows where the SAME side (low or high) is signalling on
+both timeframes are highlighted violet, chipped with the two counts, sorted to the
+top of their table, and countable via KPI tiles / a "both timeframes" filter.
+A 1-2 bar discrepancy is allowed (e.g. daily 8 + weekly 9, or daily 9 + weekly 7):
+at least one timeframe must have completed its 9, the other must be at 7 or better.
+
+Usage: python3 low9_app_builder.py <scan.json> <out.html>
+"""
 import json, sys, datetime
 
 TEMPLATE = r"""<!DOCTYPE html><html lang="en" data-theme="dark"><head>
@@ -10,6 +25,7 @@ TEMPLATE = r"""<!DOCTYPE html><html lang="en" data-theme="dark"><head>
   --blue:#3987e5; --orange:#d95926; --aqua:#199e70; --yellow:#c98500;
   --magenta:#d55181; --violet:#9085e9; --red:#e66767;
   --good:#0ca30c; --warn:#fab219; --serious:#ec835a; --crit:#d03b3b;
+  --conf1:rgba(144,133,233,0.10); --conf2:rgba(144,133,233,0.20);
 }
 html[data-theme="dark"]{
   --page:#0d0d0d; --surface:#1a1a19; --surface2:#232320; --ink:#ffffff;
@@ -22,6 +38,7 @@ html[data-theme="light"]{
   --up:#006300; --down:#d03b3b; --ring:rgba(11,11,11,0.10);
   --blue:#2a78d6; --orange:#eb6834; --aqua:#1baf7a; --yellow:#eda100;
   --magenta:#e87ba4; --violet:#4a3aa7; --red:#e34948;
+  --conf1:rgba(74,58,167,0.07); --conf2:rgba(74,58,167,0.15);
 }
 *{box-sizing:border-box}
 body{margin:0;background:var(--page);color:var(--ink);
@@ -41,6 +58,8 @@ h1{font-size:23px;margin:0;letter-spacing:-.3px;font-weight:750}
 .tlab{color:var(--muted);font-size:10.5px;margin-top:7px;text-transform:uppercase;letter-spacing:.6px}
 .tile.hot .tval{color:var(--red)}.tile.warm .tval{color:var(--orange)}
 .tile.grn .tval{color:var(--aqua)}.tile.teal .tval{color:var(--blue)}
+.tile.vio .tval{color:var(--violet)}
+.tile.vio{border-color:var(--violet);background:linear-gradient(180deg,var(--conf1),transparent)}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:8px}
 .card{background:var(--surface);border:1px solid var(--line);border-radius:14px;overflow:hidden}
 .chd{padding:13px 16px 4px;font-weight:650;font-size:14px}
@@ -66,6 +85,8 @@ h1{font-size:23px;margin:0;letter-spacing:-.3px;font-weight:750}
 .seg button{background:var(--surface2);border:0;color:var(--ink2);padding:7px 12px;font-size:12.5px;cursor:pointer}
 .seg button.on{background:var(--blue);color:#fff}
 .tg{font-size:12.5px;color:var(--ink2);display:flex;align-items:center;gap:6px;cursor:pointer}
+.tg.vio{color:var(--violet);font-weight:600}
+.tg.vio input{accent-color:var(--violet)}
 .mi{font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums;margin-left:auto}
 h2{font-size:12.5px;text-transform:uppercase;letter-spacing:1px;color:var(--muted);
   margin:26px 0 12px;border-bottom:1px solid var(--line);padding-bottom:7px}
@@ -75,6 +96,8 @@ section{background:var(--surface);border:1px solid var(--line);border-radius:14p
 .dot{width:9px;height:9px;border-radius:50%;flex:none}
 .shd small{color:var(--muted);font-weight:400;margin-left:auto;font-size:12px}
 .shd .cnt{color:var(--muted);font-weight:600;font-variant-numeric:tabular-nums}
+.shd .cc{color:var(--violet);font-weight:700;font-size:11.5px;border:1px solid var(--violet);
+  border-radius:6px;padding:1px 6px}
 table{width:100%;border-collapse:collapse;font-size:14px}
 th{font-size:10.5px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);
   text-align:left;padding:8px 14px;border-bottom:1px solid var(--line);cursor:pointer;user-select:none;white-space:nowrap}
@@ -91,9 +114,30 @@ tbody tr:first-child td{border-top:none}
 .badge{display:inline-block;min-width:24px;text-align:center;padding:2px 9px;border-radius:20px;
   font-weight:700;font-size:12.5px;color:#fff}
 .badge .plus{font-weight:400;font-size:10.5px;opacity:.9}
+.ctab{width:100%;border-collapse:collapse;font-size:13px;min-width:560px}
+.ctab th{font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);
+  text-align:right;padding:6px 10px;border-bottom:1px solid var(--line);cursor:default;white-space:nowrap}
+.ctab th:first-child{text-align:left}
+.ctab td{padding:8px 10px;border-top:1px solid var(--grid);text-align:right;font-variant-numeric:tabular-nums}
+.ctab td:first-child{text-align:left;white-space:nowrap}
+.ctab .wr{font-weight:750;font-size:14.5px}
+.ctab .sm{display:block;font-size:10.5px;color:var(--muted);font-weight:400}
+.ctab tr.base td{color:var(--muted)}.ctab tr.base .wr{font-weight:600;font-size:13px;color:var(--ink2)}
+.ctab tr.gap td{border-top:1px solid var(--line)}
+.ctab .lbl b{color:var(--violet)}
+tr.conf td{background:var(--conf1)}
+tr.conf2 td{background:var(--conf2)}
+tr.conf td.tk,tr.conf2 td.tk{box-shadow:inset 3px 0 0 var(--violet)}
+.cchip{display:inline-block;margin-left:6px;font-size:9.5px;font-weight:700;letter-spacing:.2px;
+  color:var(--violet);border:1px solid var(--violet);border-radius:5px;padding:0 4px;
+  vertical-align:middle;white-space:nowrap;font-variant-numeric:tabular-nums}
+tr.conf2 .cchip{background:var(--violet);color:#fff;border-color:var(--violet)}
 .empty{color:var(--muted);text-align:center;padding:16px}
 .note{color:var(--ink2);font-size:12px;line-height:1.65;margin-top:22px;border-top:1px solid var(--line);padding-top:14px}
 .note b{color:var(--ink)}.note .na{color:var(--muted)}
+.note .k{display:inline-block;font-size:9.5px;font-weight:700;color:var(--violet);border:1px solid var(--violet);
+  border-radius:5px;padding:0 4px;vertical-align:middle}
+.note .k.solid{background:var(--violet);color:#fff}
 @media(max-width:820px){.grid2{grid-template-columns:1fr}}
 @media(max-width:640px){.nm,.sc,th.h-nm,th.h-sc{display:none}.mi{width:100%;margin:4px 0 0}}
 </style></head>
@@ -121,6 +165,11 @@ tbody tr:first-child td{border-top:none}
   </div>
 </div>
 
+<div class="card" id="confcard" style="margin-top:16px;display:none">
+  <div class="chd">★ Daily + weekly confluence — backtested<small>every past day a name first showed the same 9 on both timeframes, and what price did next (~2y history, this universe). Big number = win rate: how often price moved the expected way (up after a low 9, down after a high 9). Below it = average <i>raw</i> forward return, so on the high-9 rows a negative average is the favourable one. Hover a cell for the median.</small></div>
+  <div class="cbody"><div style="overflow-x:auto"><table class="ctab" id="conftab"></table></div></div>
+</div>
+
 <div class="ctl">
   <div class="ctl-row">
     <input type="search" id="q" placeholder="Search ticker or company…" autocomplete="off">
@@ -137,6 +186,7 @@ tbody tr:first-child td{border-top:none}
       <button data-tf="daily">Daily</button>
       <button data-tf="weekly">Weekly</button>
     </div>
+    <label class="tg vio" title="Only names signalling on the daily AND the weekly chart"><input type="checkbox" id="confonly"> ★ Daily + weekly only</label>
     <span class="mi" id="matchinfo"></span>
   </div>
   <div class="ctl-row" id="perow" style="margin-top:12px">
@@ -168,6 +218,7 @@ const C = DATA.cls, P = DATA.perf || {};
 const fmtInt = n => n.toLocaleString('en-US');
 function esc(s){return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
 
+// ---- section config ----
 const SECTIONS = [
   {key:'weekly_low_9',  side:'low', tf:'weekly', field:'weekly_low', color:'red',    title:'Fresh weekly low-9', sub:'strongest bottom — 9 weekly closes below the close 4 weeks earlier'},
   {key:'daily_low_9',   side:'low', tf:'daily',  field:'daily_low',  color:'orange', title:'Fresh daily low-9',  sub:'9 daily closes below the close 4 days earlier'},
@@ -180,8 +231,32 @@ const SECTIONS = [
 ];
 const DOTCOL = {red:'var(--red)',orange:'var(--orange)',blue:'var(--blue)',aqua:'var(--aqua)'};
 
-const state = {q:'', sector:'', cap:'', tf:'all', low:25, high:40, showall:false, sort:{}};
+// ---- daily + weekly confluence ----
+// A name is "confluent" on a side when BOTH timeframes are signalling that side,
+// allowing a 1-2 bar discrepancy: at least one timeframe has completed its 9
+// (count >= 9) and the other is at 7 or better. Tier 2 = both completed.
+const CONF_NEAR = 7;
+function confInfo(r, side){
+  const d = r['daily_'+side], w = r['weekly_'+side];
+  if(d==null || w==null) return null;
+  if(d < CONF_NEAR || w < CONF_NEAR) return null;
+  if(d < 9 && w < 9) return null;
+  return {d:d, w:w, both:(d>=9 && w>=9)};
+}
+const cnum = v => v>9 ? ('9+'+(v-9)) : String(v);
+function confSyms(side){
+  const s=new Set();
+  for(const sec of SECTIONS){
+    if(sec.side!==side) continue;
+    for(const r of (C[sec.key]||[])) if(confInfo(r,side)) s.add(r.sym);
+  }
+  return s;
+}
 
+// ---- state ----
+const state = {q:'', sector:'', cap:'', tf:'all', low:25, high:40, showall:false, conf:false, sort:{}};
+
+// ---- helpers ----
 function capBucket(mc){ if(mc==null) return null;
   if(mc>=200e9)return'mega'; if(mc>=10e9)return'large'; if(mc>=2e9)return'mid'; return'small';}
 function countLabel(field,v){ const u=field.startsWith('weekly')?'w':'d';
@@ -198,6 +273,7 @@ function sparkSVG(spark, up){ if(!spark||spark.length<2) return '';
 
 function rowVisible(r, sec){
   if(state.tf!=='all' && sec.tf!==state.tf) return false;
+  if(state.conf && !confInfo(r,sec.side)) return false;
   if(state.q){ const q=state.q.toLowerCase();
     if(!(r.sym.toLowerCase().includes(q) || (r.name||'').toLowerCase().includes(q))) return false;}
   if(state.sector && r.sector!==state.sector) return false;
@@ -209,13 +285,16 @@ function rowVisible(r, sec){
   return true;
 }
 
+// ---- tiles ----
 function renderTiles(){
   const n=k=>(C[k]||[]).length;
   const tiles=[
     ['Fresh weekly low-9', n('weekly_low_9'),'hot'],
     ['Fresh daily low-9', n('daily_low_9'),'warm'],
+    ['★ Low 9 daily + weekly', confSyms('low').size,'vio'],
     ['Fresh weekly high-9', n('weekly_high_9'),'grn'],
     ['Fresh daily high-9', n('daily_high_9'),'teal'],
+    ['★ High 9 daily + weekly', confSyms('high').size,'vio'],
     ['Low approaching 7–8', n('daily_low_near')+n('weekly_low_near'),''],
     ['Scanned', DATA.scanned,''],
   ];
@@ -223,6 +302,7 @@ function renderTiles(){
     `<div class="tile ${c}"><div class="tval">${fmtInt(v)}</div><div class="tlab">${l}</div></div>`).join('');
 }
 
+// ---- sector chart ----
 function renderSectorChart(){
   const agg={};
   for(const sec of SECTIONS){ for(const r of (C[sec.key]||[])){
@@ -237,6 +317,7 @@ function renderSectorChart(){
     </div><div class="bv">${lo} / ${hi}</div></div>`).join('') || '<div class="empty">No signals</div>';
 }
 
+// ---- perf chart ----
 function renderPerfChart(){
   const groups=[
     ['Low-9 daily','daily','buy',[5,10,20],'d'],
@@ -258,16 +339,49 @@ function renderPerfChart(){
   document.getElementById('perfchart').innerHTML = html;
 }
 
+// ---- confluence performance table ----
+function renderConfPerf(){
+  if(!Object.keys(P).some(k=>k.indexOf('conf_')===0)) return;   // older scan JSON
+  const HS=[[5,'1 week','5d'],[10,'2 weeks','10d'],[20,'1 month','20d'],[60,'3 months','60d']];
+  const ROWS=[
+    ['<b>★★ Low double 9</b> — daily 9 + weekly 9','conf_buy_both',''],
+    ['<b>★ Low 9 + near</b> — other timeframe 7–8','conf_buy_near',''],
+    ['Low 9 daily alone — every daily 9','daily_buy','base'],
+    ['<b>★★ High double 9</b> — daily 9 + weekly 9','conf_sell_both','gap'],
+    ['<b>★ High 9 + near</b> — other timeframe 7–8','conf_sell_near',''],
+    ['High 9 daily alone — every daily 9','daily_sell','base'],
+  ];
+  const sign=v=>(v>0?'+':'')+v;
+  const cell=(pre,h)=>{
+    const s=P[`${pre}_${h}`];
+    if(!s) return '<td><span class="wr" style="color:var(--muted)">–</span></td>';
+    const col=s.win_rate>=55?'var(--good)':(s.win_rate<45?'var(--crit)':'var(--warn)');
+    const med=(s.med_ret!=null)?` · median ${sign(s.med_ret)}%`:'';
+    return `<td title="${s.n} past signals${med}"><span class="wr" style="color:${col}">${s.win_rate}%</span>
+      <span class="sm">${sign(s.avg_ret)}% avg · n=${fmtInt(s.n)}</span></td>`;
+  };
+  document.getElementById('conftab').innerHTML =
+    `<thead><tr><th>Signal</th>${HS.map(([h,l,s])=>`<th>${l}<br><span style="opacity:.6">${s}</span></th>`).join('')}</tr></thead>`+
+    `<tbody>${ROWS.map(([lab,pre,cls])=>
+      `<tr class="${cls}"><td class="lbl">${lab}</td>${HS.map(([h])=>cell(pre,h)).join('')}</tr>`).join('')}</tbody>`;
+  document.getElementById('confcard').style.display='';
+}
+
+// ---- tables ----
 function sortRows(rows, sec){
   const sk=state.sort[sec.key];
-  if(!sk) return rows;
+  if(!sk){ // default order: daily+weekly confluence first, original ranking within each tier
+    const rank=r=>{const c=confInfo(r,sec.side); return c?(c.both?0:1):2;};
+    return rows.map((r,i)=>[r,i]).sort((a,b)=>rank(a[0])-rank(b[0])||a[1]-b[1]).map(p=>p[0]);
+  }
   const {col,dir}=sk, m=dir==='asc'?1:-1;
   const val=r=>{
     if(col==='sym')return r.sym;
     if(col==='price')return r.price??-Infinity;
     if(col==='chg')return r.chg??-Infinity;
-    if(col==='pe')return r.pe??Infinity;
+    if(col==='pe')return r.pe??Infinity;   // n/a sorts last
     if(col==='ct')return r[sec.field]??0;
+    if(col==='conf'){const c=confInfo(r,sec.side); return c?(c.both?2:1):0;}
     return 0;
   };
   return rows.slice().sort((a,b)=>{const x=val(a),y=val(b);
@@ -290,25 +404,34 @@ function tableHTML(sec){
     <th class="num" data-c="chg">6mo ${ar('chg')}</th>
     <th>Trend</th>
     <th class="num" data-c="pe">P/E ${ar('pe')}</th>
+    <th class="num" data-c="conf">D+W ${ar('conf')}</th>
     <th class="num" data-c="ct">Signal ${ar('ct')}</th></tr></thead>`;
   let body;
-  if(!rows.length){ body=`<tr><td colspan="8" class="empty">None match</td></tr>`; }
+  if(!rows.length){ body=`<tr><td colspan="9" class="empty">None match</td></tr>`; }
   else body=rows.map(r=>{
     const up=(r.chg??0)>=0;
-    return `<tr>
-      <td class="tk">${esc(r.sym)}</td>
+    const ci=confInfo(r,sec.side);
+    const cls=ci?(ci.both?'conf2':'conf'):'';
+    const word=sec.side==='low'?'low':'high';
+    const chip=ci?`<span class="cchip" title="${word}-9 on both timeframes — daily ${ci.d}, weekly ${ci.w}${ci.both?' (both completed)':' (one within 1–2 bars)'}">D${cnum(ci.d)}·W${cnum(ci.w)}</span>`:'';
+    return `<tr class="${cls}">
+      <td class="tk">${esc(r.sym)}${chip}</td>
       <td class="nm">${esc(r.name||'')}</td>
       <td class="sc">${esc(r.sector||'')}</td>
       <td class="pr">$${(r.price??0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
       <td class="chg ${up?'up':'down'}">${r.chg==null?'':(up?'+':'')+r.chg+'%'}</td>
       <td>${sparkSVG(r.spark,up)}</td>
       ${peCell(r)}
+      <td class="ct" style="color:var(--violet);font-weight:700">${ci?(ci.both?'★★':'★'):''}</td>
       <td class="ct"><span class="badge" style="background:${DOTCOL[sec.color]}">${countLabel(sec.field,r[sec.field])}</span></td>
     </tr>`;}).join('');
-  const total=(C[sec.key]||[]).length;
+  const all=(C[sec.key]||[]);
+  const total=all.length;
+  const nconf=rows.filter(r=>confInfo(r,sec.side)).length;
   return `<section data-key="${sec.key}" data-tf="${sec.tf}">
     <div class="shd"><span class="dot" style="background:${DOTCOL[sec.color]}"></span>${sec.title}
       <span class="cnt">${rows.length}${rows.length!==total?` / ${total}`:''}</span>
+      ${nconf?`<span class="cc">★ ${nconf} daily+weekly</span>`:''}
       <small>${sec.sub}</small></div>
     <table>${head}<tbody>${body}</tbody></table></section>`;
 }
@@ -333,19 +456,25 @@ function bindSortHeaders(){
   });
 }
 function updateMatch(){
-  let shown=0,total=0;
+  let shown=0,total=0,conf=0;
   for(const sec of SECTIONS){ const all=C[sec.key]||[]; total+=all.length;
-    if(state.tf==='all'||sec.tf===state.tf) shown+=all.filter(r=>rowVisible(r,sec)).length;}
-  document.getElementById('matchinfo').textContent=`${shown} of ${total} signals shown`;
+    if(state.tf==='all'||sec.tf===state.tf){
+      const v=all.filter(r=>rowVisible(r,sec));
+      shown+=v.length; conf+=v.filter(r=>confInfo(r,sec.side)).length;}}
+  document.getElementById('matchinfo').innerHTML =
+    `${shown} of ${total} signals shown${conf?` · <span style="color:var(--violet)">★ ${conf} daily+weekly</span>`:''}`;
 }
 
+// ---- controls ----
 function initControls(){
+  // sector options
   const secs=new Set(); for(const sec of SECTIONS) for(const r of (C[sec.key]||[])) if(r.sector) secs.add(r.sector);
   const sel=document.getElementById('sector');
   [...secs].sort().forEach(s=>{const o=document.createElement('option');o.value=s;o.textContent=s;sel.appendChild(o);});
   sel.onchange=e=>{state.sector=e.target.value;renderTables();};
   document.getElementById('cap').onchange=e=>{state.cap=e.target.value;renderTables();};
   document.getElementById('q').oninput=e=>{state.q=e.target.value.trim();renderTables();};
+  document.getElementById('confonly').onchange=e=>{state.conf=e.target.checked;renderTables();};
   const lowr=document.getElementById('lowr'),highr=document.getElementById('highr');
   lowr.oninput=e=>{state.low=+e.target.value;document.getElementById('lowv').textContent=state.low;renderTables();};
   highr.oninput=e=>{state.high=+e.target.value;document.getElementById('highv').textContent=state.high;renderTables();};
@@ -354,20 +483,26 @@ function initControls(){
   document.querySelectorAll('#tfseg button').forEach(b=>b.onclick=()=>{
     document.querySelectorAll('#tfseg button').forEach(x=>x.classList.remove('on'));
     b.classList.add('on');state.tf=b.dataset.tf;renderTables();});
+  // hide P/E controls entirely if no P/E data present
   const hasPE=SECTIONS.some(sec=>(C[sec.key]||[]).some(r=>'pe' in r));
   if(!hasPE) document.getElementById('perow').style.display='none';
+  // theme
   document.getElementById('themebtn').onclick=()=>{
     const h=document.documentElement; h.dataset.theme=h.dataset.theme==='dark'?'light':'dark';};
 }
 
+// ---- static text ----
 function renderStatic(){
   document.getElementById('subline').innerHTML =
     `TD Sequential setups (九转序列) · ${esc(UNIVERSE)} · daily &amp; weekly · data as of <b>${esc(ASOF)}</b> · ${fmtInt(DATA.scanned)} scanned, ${DATA.errors} fetch errors`;
   document.getElementById('note').innerHTML =
-    `<b>How to read this:</b> A <b>low 9</b> completes after 9 straight bars each closing <b>below</b> the close 4 bars earlier (TD Buy Setup) — downtrend exhaustion, a possible bottom. A <b>high 9</b> completes after 9 straight bars each closing <b>above</b> the close 4 bars earlier (TD Sell Setup) — uptrend exhaustion, a possible top. Weekly signals are stronger and slower than daily. In the "extended" rows the badge reads <b>9 +N</b>: the 9 completed and the trend has continued N more bars since (days on daily, weeks on weekly). <b>Trend</b> is the ~6-month price path; <b>6mo</b> is its total change. <b>P/E</b> is trailing (TTM); names with no trailing earnings show <span class="na">n/a</span> and are always shown. The <b>backtest win-rate</b> is how often each completed 9 moved the expected way over ~2y of history (avg forward return beside it). In strong uptrends high-9 "sell" signals often keep rising — the win-rates make that visible. Generated ${esc(GENAT)}.<br><br>Technical screen for research only — <b>not financial advice</b>. Signals fail often; do your own analysis.`;
+    `<b>How to read this:</b> A <b>low 9</b> completes after 9 straight bars each closing <b>below</b> the close 4 bars earlier (TD Buy Setup) — downtrend exhaustion, a possible bottom. A <b>high 9</b> completes after 9 straight bars each closing <b>above</b> the close 4 bars earlier (TD Sell Setup) — uptrend exhaustion, a possible top. Weekly signals are stronger and slower than daily. In the "extended" rows the badge reads <b>9 +N</b>: the 9 completed and the trend has continued N more bars since (days on daily, weeks on weekly). <b>Trend</b> is the ~6-month price path; <b>6mo</b> is its total change. <b>P/E</b> is trailing (TTM); names with no trailing earnings show <span class="na">n/a</span> and are always shown. The <b>backtest win-rate</b> is how often each completed 9 moved the expected way over ~2y of history (avg forward return beside it). In strong uptrends high-9 "sell" signals often keep rising — the win-rates make that visible. Generated ${esc(GENAT)}.
+    <br><br><b>★ Daily + weekly (violet rows):</b> the same side is signalling on <b>both</b> timeframes — the strongest confirmation in this screen. The chip reads <b>D<i>daily</i>·W<i>weekly</i></b> (e.g. <span class="k">D9·W8</span>). A 1–2 bar discrepancy is allowed: at least one timeframe has completed its 9, the other is at 7 or better. <span class="k solid">solid chip / ★★</span> = both timeframes completed their 9 (darkest tint); <span class="k">outlined chip / ★</span> = one completed, the other is 1–2 bars away. Confluent names sort to the top of each table; the <b>★ Daily + weekly only</b> checkbox filters everything down to them, and the <b>D+W</b> column header sorts by it. The <b>confluence backtest</b> card near the top scores these events over ~2y of history — every past day a name first showed the signal on both timeframes, and the win rate / average forward return that followed at 1 week, 2 weeks, 1 month and 3 months — with the plain "every daily 9" row underneath as the baseline to beat.
+    <br><br>Technical screen for research only — <b>not financial advice</b>. Signals fail often; do your own analysis.`;
 }
 
-renderStatic(); renderTiles(); renderSectorChart(); renderPerfChart(); initControls(); renderTables();
+renderStatic(); renderTiles(); renderSectorChart(); renderPerfChart(); renderConfPerf();
+initControls(); renderTables();
 </script>
 </body></html>"""
 
