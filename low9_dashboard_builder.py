@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """Generate a self-contained HTML dashboard from a low9/high9 scan JSON.
 
-Layout is ranked by evidence, not symmetry. What opens on load:
-    tiles -> one-line performance headline -> ⭐ double-9 list -> fresh weekly/daily low-9.
-Everything else (extended setups, the whole high-9 side, the full backtest table,
-the how-to-read note) is folded into <details> blocks, closed by default, each with
-its count or win-rate on the summary line so nothing is hidden silently.
+Layout, top to bottom, all open on load:
+    tiles -> one-line performance headline -> ⭐ double-9 lists (low then high)
+    -> LOW 9: fresh weekly + fresh daily -> HIGH 9: fresh weekly + fresh daily.
+Only three things are folded: each side's "already extended" list, the full backtest
+table, and the how-to-read note — each with its count or win rate on the summary line.
+
+Extended setups older than EXT_MAX_WEEKLY weeks / EXT_MAX_DAILY days past their 9 are
+dropped from the page as stale; the fold's summary reports how many were dropped.
 
 Colour means one thing: GREEN = low side (expecting up), RED = high side (expecting
 down), VIOLET = daily+weekly confluence. Solid badge = fresh 9, outline = extended.
@@ -23,6 +26,18 @@ import json, sys, html
 
 CONF_NEAR = 7
 CONF_H = [5, 10, 20, 60]
+
+# An "extended" setup is one whose 9 completed N bars ago and still hasn't reversed.
+# Past these limits the signal is stale and is dropped from the page entirely
+# (the count of what was dropped is still shown, so nothing disappears silently).
+EXT_MAX_DAILY = 10    # trading days past the 9
+EXT_MAX_WEEKLY = 4    # weeks past the 9
+
+def prune_stale(rows, field):
+    """Returns (kept, n_dropped) for an extended list."""
+    lim = 9 + (EXT_MAX_WEEKLY if field.startswith("weekly") else EXT_MAX_DAILY)
+    kept = [h for h in rows if h.get(field, 0) <= lim]
+    return kept, len(rows) - len(kept)
 
 # ---------- confluence ----------
 def conf_tier(h, side):
@@ -220,10 +235,12 @@ def perf_headline(P):
     return (f'<b class="hl">Low 9 over 3 months</b> <span class="hl2">— '
             + " · ".join(parts) + " went up</span>")
 
-def high_headline(P):
+def high_caveat(P):
+    """Shown beside the high-9 heading — the side is fully visible, but the backtest
+    result travels with it rather than being buried in the note."""
     s = P.get("conf_sell_both_60") or P.get("daily_sell_60")
     if s:
-        return f'<span class="cc high">{s["win_rate"]}% over 3 months — no edge</span>'
+        return f'<span class="h2n">backtest: {s["win_rate"]}% at 3 months — weakest side</span>'
     return ""
 
 # ---------- controls ----------
@@ -311,41 +328,46 @@ def build(data, path):
         f'<div class="tile {c}"><div class="tval">{v}</div><div class="tlab">{l}</div></div>'
         for l, v, c in tiles)
 
-    # --- open by default ---
-    hero = conf_section(
-        "⭐ Low 9 on daily AND weekly",
-        "the strongest setup on this page — always shown, the P/E slider does not apply here",
-        low_conf, "low") if low_conf else ""
-    fresh_low = (section("Fresh weekly low-9", "9 weekly closes below the close 4 weeks earlier",
-                         C["weekly_low_9"], "weekly_low", "low", "fresh")
-                 + section("Fresh daily low-9", "9 daily closes below the close 4 days earlier",
-                           C["daily_low_9"], "daily_low", "low", "fresh"))
+    # --- ⭐ double 9, both sides, at the very top ---
+    hero = ""
+    if low_conf or high_conf:
+        hero = '<h2>⭐ Daily + weekly — the same 9 on both timeframes</h2>'
+        if low_conf:
+            hero += conf_section("🟢 Low 9 on daily AND weekly",
+                                 "strongest bottom confirmation — always shown, the P/E slider does not apply here",
+                                 low_conf, "low")
+        if high_conf:
+            hero += conf_section("🔴 High 9 on daily AND weekly",
+                                 "strongest top confirmation — always shown, the P/E slider does not apply here",
+                                 high_conf, "high")
 
-    # --- folded ---
-    low_ext_n = n("weekly_low_ext") + n("daily_low_ext")
-    low_ext = fold(
-        f'<span class="dot low"></span>Low 9 already extended<span class="cc low">{low_ext_n}</span>'
-        f'<small>the 9 completed and price kept falling — the setup has not worked yet</small>',
-        section("Weekly low extended", "badge shows weeks since the 9",
-                C["weekly_low_ext"], "weekly_low", "low", "ext")
-        + section("Daily low extended", "badge shows days since the 9",
-                  C["daily_low_ext"], "daily_low", "low", "ext"))
+    # --- fresh signals: open, both sides ---
+    def side_block(side, wk_title, dy_title, wk_sub, dy_sub, ext_label):
+        fresh = (section(wk_title, wk_sub, C[f"weekly_{side}_9"], f"weekly_{side}", side, "fresh")
+                 + section(dy_title, dy_sub, C[f"daily_{side}_9"], f"daily_{side}", side, "fresh"))
+        wk_ext, wk_drop = prune_stale(C[f"weekly_{side}_ext"], f"weekly_{side}")
+        dy_ext, dy_drop = prune_stale(C[f"daily_{side}_ext"], f"daily_{side}")
+        dropped = wk_drop + dy_drop
+        stale = (f'<span class="stale">{dropped} dropped as stale</span>' if dropped else "")
+        ext = fold(
+            f'<span class="dot {side}"></span>{ext_label}'
+            f'<span class="cc {side}">{len(wk_ext) + len(dy_ext)}</span>{stale}'
+            f'<small>the 9 completed and price kept going — hidden past '
+            f'{EXT_MAX_WEEKLY}w / {EXT_MAX_DAILY}d</small>',
+            section("Weekly extended", "badge shows weeks since the 9", wk_ext, f"weekly_{side}", side, "ext")
+            + section("Daily extended", "badge shows days since the 9", dy_ext, f"daily_{side}", side, "ext"))
+        return fresh + ext
 
-    high_n = n("weekly_high_9") + n("daily_high_9") + n("weekly_high_ext") + n("daily_high_ext")
-    high_body = ((conf_section("⭐ High 9 on daily AND weekly",
-                               "badge shows both counts (daily · weekly)", high_conf, "high") if high_conf else "")
-                 + section("Fresh weekly high-9", "9 weekly closes above the close 4 weeks earlier",
-                           C["weekly_high_9"], "weekly_high", "high", "fresh")
-                 + section("Fresh daily high-9", "9 daily closes above the close 4 days earlier",
-                           C["daily_high_9"], "daily_high", "high", "fresh")
-                 + section("Weekly high extended", "badge shows weeks since the 9",
-                           C["weekly_high_ext"], "weekly_high", "high", "ext")
-                 + section("Daily high extended", "badge shows days since the 9",
-                           C["daily_high_ext"], "daily_high", "high", "ext"))
-    high_fold = fold(
-        f'<span class="dot high"></span>High 9 — potential tops<span class="cc high">{high_n}</span>'
-        f'{high_headline(P)}<small>folded because the backtest shows no reliable edge on this side</small>',
-        high_body, cls="highfold")
+    low_block = side_block("low",
+                           "Fresh weekly low-9", "Fresh daily low-9",
+                           "9 weekly closes below the close 4 weeks earlier",
+                           "9 daily closes below the close 4 days earlier",
+                           "Low 9 already extended")
+    high_block = side_block("high",
+                            "Fresh weekly high-9", "Fresh daily high-9",
+                            "9 weekly closes above the close 4 weeks earlier",
+                            "9 daily closes above the close 4 days earlier",
+                            "High 9 already extended")
 
     perf_fold = fold(f'<span class="dot vio"></span>{perf_headline(P)}'
                      f'<small>tap for the full backtest — both sides, all horizons</small>',
@@ -383,6 +405,7 @@ def build(data, path):
         'Technical screen for research only — <b>not financial advice</b>. Signals fail often; do your own analysis.'
         '</div>')
 
+    high_caveat_html = high_caveat(P)
     controls = CONTROLS if has_pe else ""
     filter_js = FILTER_JS if has_pe else ""
 
@@ -455,6 +478,8 @@ font-weight:700;font-size:13px;color:#fff;font-variant-numeric:tabular-nums}}
 .badge.out{{background:transparent;border:1px solid currentColor}}
 .badge.low.out{{color:var(--low)}}.badge.high.out{{color:var(--high)}}.badge.vio.out{{color:var(--vio)}}
 .badge .plus{{font-weight:400;font-size:11px;opacity:.85}}
+h2 .h2n{{float:right;text-transform:none;letter-spacing:0;font-size:11.5px;color:var(--high);opacity:.85}}
+.stale{{font-size:11px;color:var(--mutc);border:1px dashed var(--mutc);border-radius:6px;padding:1px 6px}}
 .cf{{width:56px;text-align:center}}
 .spill{{display:inline-block;min-width:34px;text-align:center;padding:3px 7px;border-radius:8px;
 font-weight:700;font-size:13px;font-variant-numeric:tabular-nums;color:#fff}}
@@ -488,9 +513,10 @@ padding:0 5px;vertical-align:middle}}
 {controls}
 {perf_fold}
 {hero}
-{fresh_low}
-{low_ext}
-{high_fold}
+<h2>🟢 Low 9 — potential bottoms (bounce up)</h2>
+{low_block}
+<h2>🔴 High 9 — potential tops (reverse / drop){high_caveat_html}</h2>
+{high_block}
 {note_fold}
 </div>{filter_js}</body></html>"""
     with open(path, "w") as f:
